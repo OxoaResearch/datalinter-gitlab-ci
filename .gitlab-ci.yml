@@ -1,0 +1,68 @@
+# Requires a CI/CD variable GITLAB_TOKEN (Project or Personal Access Token with api scope)
+# and a runner configured for Docker-in-Docker (dind).
+
+variables:
+  DOCKER_CONTAINER_CODE_DIR: "/tmp"
+  DOCKER_CONTAINER_DATA_DIR: "/_data"
+  DOCKER_CONTAINER_CONFIG_DIR: "/_config"
+
+  REPO_CODE_DIR: "/test/code"
+  REPO_DATA_DIR: "/test/data"
+  REPO_CONFIG_DIR: "/config"
+
+  TARGET_DATA_FILE: "imbalanced_data.csv"
+  TARGET_CODE_FILE: "r_snippet_imbalanced.r"
+  CONFIG_FILE: "r_modelling_config.toml"
+
+  LOG_LEVEL: "debug"
+
+stages:
+  - lint
+
+datalinter:
+  stage: lint
+  image: docker:latest
+  services:
+    - docker:dind
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+  before_script:
+    - apk add --no-cache curl python3
+  script:
+    - |
+      curl --silent --fail --request POST \
+        --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+        --header "Content-Type: application/json" \
+        --data '{"body": "Hello from DataLinter!"}' \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes"
+
+    - docker pull ghcr.io/zgornel/datalinter-compiled:latest
+
+    - |
+      docker run \
+        --volume="$CI_PROJECT_DIR$REPO_CODE_DIR:$DOCKER_CONTAINER_CODE_DIR" \
+        --volume="$CI_PROJECT_DIR$REPO_DATA_DIR:$DOCKER_CONTAINER_DATA_DIR" \
+        --volume="$CI_PROJECT_DIR$REPO_CONFIG_DIR:$DOCKER_CONTAINER_CONFIG_DIR" \
+        ghcr.io/zgornel/datalinter-compiled:latest \
+        /datalinter/bin/datalinter \
+          "$DOCKER_CONTAINER_DATA_DIR/$TARGET_DATA_FILE" \
+          --code-path "$DOCKER_CONTAINER_CODE_DIR/$TARGET_CODE_FILE" \
+          --config-path "$DOCKER_CONTAINER_CONFIG_DIR/$CONFIG_FILE" \
+          --print-exceptions \
+          --log-level "$LOG_LEVEL" 2>&1 | tee /tmp/datalinter_output.txt || true
+
+      echo "--- DataLinter output ---"
+      cat /tmp/datalinter_output.txt
+
+      COMMENT_ID=$(curl --silent \
+        --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes" \
+        | python3 -c "import sys, json; notes = json.load(sys.stdin); print(next((n['id'] for n in notes if 'Hello from DataLinter!' in n.get('body', '')), ''))")
+
+      COMMENT_PAYLOAD=$(python3 -c "import json; f=open('/tmp/datalinter_output.txt'); c=f.read(); f.close(); b=chr(96)*3; print(json.dumps({'body': b+'\n'+c+'\n'+b}))")
+
+      curl --silent --request PUT \
+        --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+        --header "Content-Type: application/json" \
+        --data "$COMMENT_PAYLOAD" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes/$COMMENT_ID"
