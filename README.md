@@ -61,7 +61,7 @@ Complete DataLinter output (stdout + stderr) formatted as a Markdown code block.
 
 4. `datalinter` binary is executed inside the container.
 5. All output is captured and stored in the `datalinter_output.txt`.
-6. On `merge_request_event` or `push` on the MR branch, the output is automatically posted (or edited) as a MR comment.
+6. On `merge_request_event` (that includes `push` on the MR branch), the output is automatically posted (or edited) as a MR comment.
 
 ## DataLinter Configuration
 
